@@ -76,7 +76,7 @@ Together they move customers from:
 
 ---
 
-## The 7 Sales Angles
+## The 7 Joint Use case Angles
 
 ### 1. 💾 Agent State Persistence
 Without a database, agent outputs disappear. With CockroachDB, every agent run stores:
