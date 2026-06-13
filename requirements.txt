@@ -1,0 +1,13 @@
+# CrewAI + CockroachDB PoC Dependencies
+
+# Core AI orchestration framework
+crewai>=1.14.7
+
+# CockroachDB / PostgreSQL driver
+psycopg2-binary>=2.9.9
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# OpenAI LLM provider (default for CrewAI)
+openai>=1.12.0
