@@ -32,7 +32,7 @@ Together they move customers from:
 | AI can reason & act, but outputs vanish | CockroachDB persists every decision, reasoning chain, and output |
 | No auditability or compliance trail | Every agent action is logged with timestamps and full context |
 | AI agents can't collaborate at scale | Shared agent workspace in CockroachDB enables multi-agent coordination |
-| Demo-grade infrastructure (Redis, SQLite) | Enterprise-grade: HA, replication, distributed, strongly consistent |
+| Demo-grade infrastructure for Database | Enterprise-grade: HA, replication, distributed, strongly consistent |
 | No governance story for executives | Complete audit log: what, who, when, why — queryable forever |
 
 ---
