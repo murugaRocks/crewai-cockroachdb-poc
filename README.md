@@ -182,6 +182,53 @@ Tomorrow they'll run **AI Workflows**.
 
 ---
 
+## Why CockroachDB, not just PostgreSQL
+
+Everything above (persistence, JSONB, FKs, indexes) works on plain Postgres. The claims that actually require CockroachDB are grouped in a new module, [`crdb_features.py`](./crdb_features.py), with the underlying SQL in [`crdb_differentiators.sql`](./crdb_differentiators.sql).
+
+| Claim in the pitch | Feature that backs it | Postgres equivalent |
+|---|---|---|
+| "Compliance query: what did the audit trail look like at 14:00?" | `AS OF SYSTEM TIME` — read any past state within the GC window | `pg_dump` snapshots + restore, or temporal-table extension |
+| "Approval dashboards don't hammer the leaseholder" | `follower_read_timestamp()` — cheap, globally-consistent bounded-staleness read from the nearest replica | Async streaming replica (lag varies, not bounded) |
+| "Bulk-load workflows without a write hotspot" | `ALTER TABLE ... SPLIT AT` — pre-split the range at chosen PK boundaries | N/A (Postgres is not range-sharded) |
+| "The audit log streams to an immutable downstream vault" | `CREATE CHANGEFEED` to Kafka / webhook / GCP Pub/Sub / S3, with resolved timestamps | Debezium + Kafka Connect + schema registry (multi-service) |
+| "The audit log cannot be tampered with by an app user" | `REVOKE UPDATE, DELETE ON audit_log FROM app_writer` + changefeed to external sink | Same GRANT/REVOKE model, but no built-in change-stream |
+| "One row-set per region, low-latency writes globally" | `ALTER TABLE ... SET LOCALITY REGIONAL BY ROW` | Application-level sharding (Citus or DIY) |
+
+Quick tour:
+
+```python
+from database import get_connection
+from crdb_features import (
+    read_workflow_at,
+    read_recent_workflow_history,
+    follower_read_pending_approvals,
+    presplit_workflows,
+    show_workflow_ranges,
+    create_approval_changefeed,
+)
+
+conn = get_connection()
+
+# What did the audit trail look like 5 minutes ago?
+rows = read_workflow_at(conn, workflow_id, "-5m")
+
+# Serve the pending-approvals dashboard from the nearest replica
+pending = follower_read_pending_approvals(conn)
+
+# Before a load test, pre-split the workflow table into 8 ranges
+presplit_workflows(conn, num_splits=8)
+print(show_workflow_ranges(conn))
+
+# Stream every approval decision to Kafka (or a webhook, or GCP Pub/Sub)
+create_approval_changefeed(
+    conn,
+    "kafka://kafka-broker:9092?topic_name=crewai_approvals",
+)
+```
+
+---
+
 ## Partnership Positioning
 
 > **CrewAI** gives organizations autonomous agents that can think and act.  
