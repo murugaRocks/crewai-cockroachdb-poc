@@ -104,19 +104,39 @@ def follower_read_pending_approvals(conn) -> list:
     Fetch the pending-approvals list from the nearest replica using a
     follower read. Ideal for dashboards where a few seconds of staleness
     is fine.
+
+    CockroachDB does not accept a per-table `AS OF SYSTEM TIME` clause
+    inside a JOIN, so the read runs in an explicit read-only transaction
+    whose timestamp is pinned via `BEGIN TRANSACTION AS OF SYSTEM TIME
+    follower_read_timestamp()`. Any replica that holds the range can
+    serve it, without a round-trip to the leaseholder.
     """
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT aq.id, aw.workflow_name, aq.recommendation, aq.created_at
-            FROM approval_queue aq
-            AS OF SYSTEM TIME follower_read_timestamp()
-            JOIN agent_workflows aw
-            AS OF SYSTEM TIME follower_read_timestamp()
-              ON aq.workflow_id = aw.id
-            WHERE aq.status = 'pending'
-            ORDER BY aq.created_at ASC
-        """)
-        return cur.fetchall()
+    # We want to send BEGIN / COMMIT literally, so temporarily flip
+    # autocommit ON to keep psycopg2 from wrapping our statements in
+    # its own implicit transaction.
+    prev_autocommit = conn.autocommit
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "BEGIN TRANSACTION AS OF SYSTEM TIME follower_read_timestamp()"
+            )
+            try:
+                cur.execute("""
+                    SELECT aq.id, aw.workflow_name, aq.recommendation, aq.created_at
+                    FROM approval_queue aq
+                    JOIN agent_workflows aw ON aq.workflow_id = aw.id
+                    WHERE aq.status = 'pending'
+                    ORDER BY aq.created_at ASC
+                """)
+                rows = cur.fetchall()
+                cur.execute("COMMIT")
+                return rows
+            except Exception:
+                cur.execute("ROLLBACK")
+                raise
+    finally:
+        conn.autocommit = prev_autocommit
 
 
 # 3. SPLIT AT

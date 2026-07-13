@@ -40,14 +40,15 @@ ALTER TABLE audit_log CONFIGURE ZONE USING gc.ttlseconds = 2592000;
 -- Postgres has read replicas but they're either async-lagged
 -- (streaming replication) or require a separate serving path.
 
+-- AS OF SYSTEM TIME cannot appear per-table inside a JOIN. For a
+-- multi-table follower read, pin the timestamp on the whole transaction:
+BEGIN TRANSACTION AS OF SYSTEM TIME follower_read_timestamp();
 SELECT aq.id, aw.workflow_name, aq.recommendation, aq.created_at
 FROM approval_queue aq
-AS OF SYSTEM TIME follower_read_timestamp()
-JOIN agent_workflows aw
-AS OF SYSTEM TIME follower_read_timestamp()
-  ON aq.workflow_id = aw.id
+JOIN agent_workflows aw ON aq.workflow_id = aw.id
 WHERE aq.status = 'pending'
 ORDER BY aq.created_at ASC;
+COMMIT;
 
 
 -- ── 3. SPLIT AT (pre-split hot ranges) ──────────────────────
