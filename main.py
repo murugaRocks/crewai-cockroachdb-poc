@@ -93,131 +93,160 @@ def run_poc():
     conn = get_connection()
     init_db(conn)
 
-    # ── Step 2: Create workflow record ───────────────────────
-    print_step("📝", f"Creating workflow record for claim: {SAMPLE_CLAIM['claim_id']}")
-    workflow_id = create_workflow(conn, "insurance_claims_processing", SAMPLE_CLAIM)
-    print(f"   → Workflow ID: {workflow_id}")
-    print(f"   → Status: RUNNING (persisted in CockroachDB)")
+    workflow_id = None
+    final_result = None
+    try:
+        # ── Step 2: Create workflow record ───────────────────
+        print_step("📝", f"Creating workflow record for claim: {SAMPLE_CLAIM['claim_id']}")
+        workflow_id = create_workflow(conn, "insurance_claims_processing", SAMPLE_CLAIM)
+        print(f"   → Workflow ID: {workflow_id}")
+        print(f"   → Status: RUNNING (persisted in CockroachDB)")
 
-    # ── Step 3: Initialize agents ────────────────────────────
-    print_step("🤖", "Initializing CrewAI Agents...")
-    agents = create_all_agents()
-    print("   → Research Analyst Agent")
-    print("   → Fraud Risk Specialist Agent")
-    print("   → Recommendation Officer Agent")
+        # ── Step 3: Initialize agents ────────────────────────
+        print_step("🤖", "Initializing CrewAI Agents...")
+        agents = create_all_agents()
+        print("   → Research Analyst Agent")
+        print("   → Fraud Risk Specialist Agent")
+        print("   → Recommendation Officer Agent")
 
-    # ── Step 4: Define tasks ─────────────────────────────────
-    tasks = create_tasks(agents, SAMPLE_CLAIM)
+        # ── Step 4: Define tasks ─────────────────────────────
+        tasks = create_tasks(agents, SAMPLE_CLAIM)
 
-    # ── Step 5: Run the crew (sequential pipeline) ───────────
-    print_step("🔄", "Running CrewAI sequential workflow...")
-    print("-" * 60)
+        # ── Step 5: Run the crew (sequential pipeline) ───────
+        print_step("🔄", "Running CrewAI sequential workflow...")
+        print("-" * 60)
 
-    crew = Crew(
-        agents=list(agents.values()),
-        tasks=tasks,
-        process=Process.sequential,
-        verbose=True
-    )
+        crew = Crew(
+            agents=list(agents.values()),
+            tasks=tasks,
+            process=Process.sequential,
+            verbose=True
+        )
 
-    final_result = crew.kickoff()
+        final_result = crew.kickoff()
 
-    print("-" * 60)
-    print_step("✅", "CrewAI workflow complete!")
+        print("-" * 60)
+        print_step("✅", "CrewAI workflow complete!")
 
-    # ── Step 6: Persist all agent outputs to CockroachDB ─────
-    print_step("💾", "Persisting agent outputs to CockroachDB...")
+        # ── Step 6: Persist all agent outputs to CockroachDB ─
+        print_step("💾", "Persisting agent outputs to CockroachDB...")
 
-    research_output = str(tasks[0].output) if hasattr(tasks[0], 'output') and tasks[0].output else "Research analysis completed"
-    risk_output = str(tasks[1].output) if hasattr(tasks[1], 'output') and tasks[1].output else "Risk assessment completed"
-    recommendation_output = str(final_result)
+        # CrewAI Task.output is a TaskOutput object whose `.raw` attribute
+        # holds the agent's raw text. Fall back through common shapes.
+        def _extract(task, fallback: str) -> str:
+            out = getattr(task, "output", None)
+            if out is None:
+                return fallback
+            for attr in ("raw", "raw_output"):
+                val = getattr(out, attr, None)
+                if val:
+                    return str(val)
+            return str(out)
 
-    research_action_id = save_agent_action(
-        conn, workflow_id,
-        "Insurance Claims Research Analyst",
-        "claim_research_analysis",
-        SAMPLE_CLAIM,
-        research_output
-    )
-    print(f"   → Research output saved (ID: {research_action_id[:8]}...)")
+        research_output = _extract(tasks[0], "Research analysis completed")
+        risk_output = _extract(tasks[1], "Risk assessment completed")
+        recommendation_output = _extract(tasks[2], str(final_result))
 
-    risk_action_id = save_agent_action(
-        conn, workflow_id,
-        "Fraud Risk Assessment Specialist",
-        "fraud_risk_assessment",
-        SAMPLE_CLAIM,
-        risk_output
-    )
-    print(f"   → Risk assessment saved (ID: {risk_action_id[:8]}...)")
+        research_action_id = save_agent_action(
+            conn, workflow_id,
+            "Insurance Claims Research Analyst",
+            "claim_research_analysis",
+            SAMPLE_CLAIM,
+            research_output
+        )
+        print(f"   → Research output saved (ID: {research_action_id[:8]}...)")
 
-    recommendation_action_id = save_agent_action(
-        conn, workflow_id,
-        "Claims Decision Recommendation Officer",
-        "final_recommendation",
-        SAMPLE_CLAIM,
-        recommendation_output
-    )
-    print(f"   → Recommendation saved (ID: {recommendation_action_id[:8]}...)")
+        risk_action_id = save_agent_action(
+            conn, workflow_id,
+            "Fraud Risk Assessment Specialist",
+            "fraud_risk_assessment",
+            SAMPLE_CLAIM,
+            risk_output
+        )
+        print(f"   → Risk assessment saved (ID: {risk_action_id[:8]}...)")
 
-    # ── Step 7: Human-in-the-Loop approval ───────────────────
-    print_step("👤", "Routing recommendation to Human-in-the-Loop approval queue...")
-    approval_id = create_approval_request(
-        conn, workflow_id, recommendation_action_id,
-        recommendation_output
-    )
-    print(f"   → Approval Request ID: {approval_id}")
-    print(f"   → Status: PENDING HUMAN REVIEW")
-    print(f"   → In production: notification sent to claims supervisor")
+        recommendation_action_id = save_agent_action(
+            conn, workflow_id,
+            "Claims Decision Recommendation Officer",
+            "final_recommendation",
+            SAMPLE_CLAIM,
+            recommendation_output
+        )
+        print(f"   → Recommendation saved (ID: {recommendation_action_id[:8]}...)")
 
-    # Simulate human review delay
-    print("\n⏳ Simulating human review (2 seconds)...")
-    time.sleep(2)
+        # ── Step 7: Human-in-the-Loop approval ───────────────
+        print_step("👤", "Routing recommendation to Human-in-the-Loop approval queue...")
+        approval_id = create_approval_request(
+            conn, workflow_id, recommendation_action_id,
+            recommendation_output
+        )
+        print(f"   → Approval Request ID: {approval_id}")
+        print(f"   → Status: PENDING HUMAN REVIEW")
+        print(f"   → In production: notification sent to claims supervisor")
 
-    # Simulate human decision
-    process_approval(
-        conn, approval_id,
-        status="approved",
-        reviewer="supervisor@insurance-co.com",
-        comments="AI recommendation reviewed. Documentation verified. Approved for settlement."
-    )
-    print_step("✅", "Human approval decision recorded in CockroachDB")
-    print("   → Reviewer: supervisor@insurance-co.com")
-    print("   → Decision: APPROVED")
+        # Simulate human review delay
+        print("\n⏳ Simulating human review (2 seconds)...")
+        time.sleep(2)
 
-    # ── Step 8: Complete workflow ─────────────────────────────
-    complete_workflow(conn, workflow_id, status="completed")
-    print_step("🏁", "Workflow marked as COMPLETED in CockroachDB")
+        # Simulate human decision
+        process_approval(
+            conn, approval_id,
+            status="approved",
+            reviewer="supervisor@insurance-co.com",
+            comments="AI recommendation reviewed. Documentation verified. Approved for settlement."
+        )
+        print_step("✅", "Human approval decision recorded in CockroachDB")
+        print("   → Reviewer: supervisor@insurance-co.com")
+        print("   → Decision: APPROVED")
 
-    # ── Step 9: Display full audit trail ─────────────────────
-    print_step("📋", "Full Audit Trail (queried directly from CockroachDB):")
-    print("-" * 60)
-    audit_trail = get_workflow_audit_trail(conn, workflow_id)
-    for event_type, event_data, actor, timestamp in audit_trail:
-        print(f"  [{timestamp}]")
-        print(f"    Event:  {event_type}")
-        print(f"    Actor:  {actor}")
+        # ── Step 8: Complete workflow ────────────────────────
+        complete_workflow(conn, workflow_id, status="completed")
+        print_step("🏁", "Workflow marked as COMPLETED in CockroachDB")
+
+        # ── Step 9: Display full audit trail ─────────────────
+        print_step("📋", "Full Audit Trail (queried directly from CockroachDB):")
+        print("-" * 60)
+        audit_trail = get_workflow_audit_trail(conn, workflow_id)
+        for event_type, event_data, actor, timestamp in audit_trail:
+            print(f"  [{timestamp}]")
+            print(f"    Event:  {event_type}")
+            print(f"    Actor:  {actor}")
+            print()
+
+        # ── Final Summary ────────────────────────────────────
+        print_header("PoC Summary")
+        print(f"  ✅ Claim:       {SAMPLE_CLAIM['claim_id']}")
+        print(f"  ✅ Workflow ID: {workflow_id}")
+        print(f"  ✅ Approval ID: {approval_id}")
+        print(f"  ✅ Audit Events: {len(audit_trail)} entries in CockroachDB")
         print()
+        print("  What just happened:")
+        print("  1. CrewAI ran 3 agents sequentially (Research → Risk → Recommendation)")
+        print("  2. Every output was persisted to CockroachDB in real-time")
+        print("  3. A human approval request was created and recorded")
+        print("  4. Human approval was stored with reviewer identity and timestamp")
+        print("  5. A full, immutable audit trail was written to CockroachDB")
+        print()
+        print("  This is CrewAI + CockroachDB: AI that's trustworthy, auditable,")
+        print("  and production-ready. Not just a demo, a business process.")
+        print('='*60)
 
-    # ── Final Summary ─────────────────────────────────────────
-    print_header("PoC Summary")
-    print(f"  ✅ Claim:       {SAMPLE_CLAIM['claim_id']}")
-    print(f"  ✅ Workflow ID: {workflow_id}")
-    print(f"  ✅ Approval ID: {approval_id}")
-    print(f"  ✅ Audit Events: {len(audit_trail)} entries in CockroachDB")
-    print()
-    print("  What just happened:")
-    print("  1. CrewAI ran 3 agents sequentially (Research → Risk → Recommendation)")
-    print("  2. Every output was persisted to CockroachDB in real-time")
-    print("  3. A human approval request was created and recorded")
-    print("  4. Human approval was stored with reviewer identity and timestamp")
-    print("  5. A full, immutable audit trail was written to CockroachDB")
-    print()
-    print("  This is CrewAI + CockroachDB: AI that's trustworthy, auditable,")
-    print("  and production-ready. Not just a demo — a business process.")
-    print('='*60)
+        return final_result
 
-    conn.close()
-    return final_result
+    except Exception as exc:
+        # Any failure between workflow-create and workflow-complete leaves the
+        # row stuck at 'running'. Mark it failed so the audit trail reflects
+        # reality, then re-raise so the caller sees the original traceback.
+        if workflow_id is not None:
+            try:
+                complete_workflow(conn, workflow_id, status="failed")
+                print_step("❌", f"Workflow failed: {exc!r}")
+                print(f"   → Workflow {workflow_id} marked as FAILED in CockroachDB")
+            except Exception as cleanup_exc:
+                print_step("⚠️", f"Also failed to mark workflow FAILED: {cleanup_exc!r}")
+        raise
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

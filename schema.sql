@@ -10,16 +10,31 @@
 --   \i schema.sql
 -- ============================================================
 
+-- Enum Types
+-- Enforce valid status values at the database layer instead of via
+-- free-form STRING columns (which silently accept typos like 'aproved').
+CREATE TYPE IF NOT EXISTS workflow_status AS ENUM (
+    'pending', 'running', 'completed', 'failed'
+);
+
+CREATE TYPE IF NOT EXISTS action_status AS ENUM (
+    'pending', 'running', 'completed', 'failed'
+);
+
+CREATE TYPE IF NOT EXISTS approval_status AS ENUM (
+    'pending', 'approved', 'rejected', 'escalated'
+);
+
 -- Agent Workflows
 -- Tracks each CrewAI workflow execution from start to finish.
 CREATE TABLE IF NOT EXISTS agent_workflows (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workflow_name STRING NOT NULL,
-    status STRING DEFAULT 'pending',        -- pending | running | completed | failed
+    status workflow_status NOT NULL DEFAULT 'pending',
     input_data JSONB,                        -- Full input payload (claim details, etc.)
-    started_at TIMESTAMP DEFAULT now(),
-    completed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT now(),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     INDEX idx_workflow_status (status),
     INDEX idx_workflow_name (workflow_name),
     INDEX idx_workflow_created_at (created_at)
@@ -29,14 +44,14 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
 -- Stores every individual agent decision and output.
 CREATE TABLE IF NOT EXISTS agent_actions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workflow_id UUID REFERENCES agent_workflows(id) ON DELETE CASCADE,
+    workflow_id UUID NOT NULL REFERENCES agent_workflows(id) ON DELETE CASCADE,
     agent_name STRING NOT NULL,
     task_name STRING NOT NULL,
     input_data JSONB,                        -- Task input
     output_data TEXT,                        -- Agent's full output text
-    status STRING DEFAULT 'pending',        -- pending | running | completed | failed
-    started_at TIMESTAMP DEFAULT now(),
-    completed_at TIMESTAMP,
+    status action_status NOT NULL DEFAULT 'pending',
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
     INDEX idx_action_workflow (workflow_id),
     INDEX idx_action_agent (agent_name),
     INDEX idx_action_status (status)
@@ -46,14 +61,14 @@ CREATE TABLE IF NOT EXISTS agent_actions (
 -- Human-in-the-loop: agent recommends, human approves, agent executes.
 CREATE TABLE IF NOT EXISTS approval_queue (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workflow_id UUID REFERENCES agent_workflows(id) ON DELETE CASCADE,
-    action_id UUID REFERENCES agent_actions(id) ON DELETE CASCADE,
+    workflow_id UUID NOT NULL REFERENCES agent_workflows(id) ON DELETE CASCADE,
+    action_id   UUID NOT NULL REFERENCES agent_actions(id)   ON DELETE CASCADE,
     recommendation TEXT NOT NULL,            -- AI recommendation text
-    status STRING DEFAULT 'pending',        -- pending | approved | rejected | escalated
+    status approval_status NOT NULL DEFAULT 'pending',
     reviewer STRING,                         -- Email/ID of human reviewer
     reviewer_comments TEXT,
-    reviewed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT now(),
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     INDEX idx_approval_status (status),
     INDEX idx_approval_workflow (workflow_id),
     INDEX idx_approval_created_at (created_at)
@@ -62,34 +77,38 @@ CREATE TABLE IF NOT EXISTS approval_queue (
 -- Audit Log
 -- Immutable record of all agent and human actions.
 -- This is the governance & compliance layer.
+--
+-- Note: workflow_id is intentionally NOT a foreign key. Audit rows must
+-- survive workflow deletes for compliance retention.
 CREATE TABLE IF NOT EXISTS audit_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workflow_id UUID,
     event_type STRING NOT NULL,              -- WORKFLOW_STARTED, AGENT_ACTION_COMPLETED, etc.
     event_data JSONB,                        -- Full event context
-    actor STRING DEFAULT 'system',          -- system | human email
-    timestamp TIMESTAMP DEFAULT now(),
+    actor STRING NOT NULL DEFAULT 'system',  -- system | human email
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
     INDEX idx_audit_workflow (workflow_id),
     INDEX idx_audit_event_type (event_type),
     INDEX idx_audit_timestamp (timestamp)
 );
 
--- ── Useful Queries ──────────────────────────────────────────
-
+-- Useful Queries
+--
 -- View all pending approvals:
--- SELECT aq.id, aw.workflow_name, aq.recommendation, aq.created_at
--- FROM approval_queue aq
--- JOIN agent_workflows aw ON aq.workflow_id = aw.id
--- WHERE aq.status = 'pending';
-
+--   SELECT aq.id, aw.workflow_name, aq.recommendation, aq.created_at
+--   FROM approval_queue aq
+--   JOIN agent_workflows aw ON aq.workflow_id = aw.id
+--   WHERE aq.status = 'pending';
+--
 -- Full audit trail for a specific workflow:
--- SELECT event_type, actor, timestamp, event_data
--- FROM audit_log
--- WHERE workflow_id = '<your-workflow-id>'
--- ORDER BY timestamp ASC;
-
+--   SELECT event_type, actor, timestamp, event_data
+--   FROM audit_log
+--   WHERE workflow_id = '<your-workflow-id>'
+--   ORDER BY timestamp ASC;
+--
 -- Agent performance summary:
--- SELECT agent_name, COUNT(*) as actions, AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) as avg_seconds
--- FROM agent_actions
--- WHERE status = 'completed'
--- GROUP BY agent_name;
+--   SELECT agent_name, COUNT(*) AS actions,
+--          AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) AS avg_seconds
+--   FROM agent_actions
+--   WHERE status = 'completed'
+--   GROUP BY agent_name;
